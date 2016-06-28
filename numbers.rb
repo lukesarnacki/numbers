@@ -9,12 +9,17 @@ class Network
     @layers = []
     neurons_in_layers[1..-1].each_with_index do |neurons_number, layer|
       inputs_number = neurons_in_layers[layer]
+      # Wypelnianie warst neuronami. Tylko warstwy ukryte i warstwa wyjsciowa sa
+      # reprezentowane jako neurony, warstwa wejsciowa nie ma reprezentacji w
+      # kodzie
       @layers[layer] = neurons_number.times.map do
         Neuron.new(inputs_number: inputs_number)
       end
     end
   end
 
+  # Dla danych wejsciowych podanych jako parametr, metoda zwraca jako jaka cyfre
+  # te dane zostaly sklasyfikowane.
   def digit(input)
     Tools.max_index(calculate_output(input))
   end
@@ -23,6 +28,8 @@ class Network
     layers[-1].count
   end
 
+  # Rekurencyjnie trenuje siec dla wszystkich warst zaczynajac od ostatniej
+  # (indeks -1) a konczac na pierwszej warstwie ukrytej.
   def train(expected_output, learning_rate, layer = -1)
     layers[layer].each_with_index.map do |neuron, neuron_number|
       inputs = neuron.inputs
@@ -53,8 +60,7 @@ class Network
     end
 
     if layers.count + layer == 0
-      # To byla pierwsza warstwa ukryta, dlatego mozemy zapisac wagi i bias
-      #save_weights_and_bias
+      # To byla ostatnia warstwa, mozna zakonczyc wykonanie metody
       return
     end
     train(expected_output, learning_rate, layer - 1)
@@ -64,15 +70,24 @@ class Network
     layers.each {|layer| layer.map { |neuron| neuron.save_weights_and_bias } }
   end
 
-  def calculate_output(inputs, layer: -1)
+  # Wyjscie sieci dla danych wejsciowych. Zwraca tablice o dlugosci rownej
+  # ilosci neuronow z ostatniej warstwie.
+  def calculate_output(inputs, layer: 0)
     output = if(layer == -1)
+      # -1 oznacza w tym momencie warstwe wejsciowa, warstwa wejsciowa jest umowna
+      # i dla niej wartosci wyjsciowe to po prostu to co zostalo przekazane w
+      # metodzie jako wyjscie
       inputs
     else
+      # Dla kolejnych warstw wyjscie jest obliczane przez kazdy z neuronow
+      # warstwy
       layers[layer].map {|neuron| neuron.calculate_output(inputs) }
     end
 
-    return output if layer >= layers.count - 1
+    # Dla warstwy wyjsciowej zwracamy obliczone wartosci wyjsciowe
+    return output if layer > layers.count
 
+    # Wywoalenie rekurencyjne metody dla kolejnej warstwy
     calculate_output(output, layer: layer + 1)
   end
 
@@ -99,7 +114,7 @@ class NetworkTrainer
     # uczenia
     :multi
 
-    attr_accessor :max_training_progress, :current_training_progress, :best_network
+    attr_accessor :max_training_quality, :current_training_quality, :best_network
 
   def initialize(network, learning_rate: 3.0, max_epochs: 30, batch_size: 20, multi: false)
     @network = network
@@ -107,7 +122,7 @@ class NetworkTrainer
     @max_epochs = max_epochs
     @batch_size = batch_size
     @multi = multi
-    @max_training_progress = 0
+    @max_training_quality = 0
   end
 
   def random_batch
@@ -128,20 +143,27 @@ class NetworkTrainer
     Array.new(network.output_layer_size, 0.0).insert(digit, 1.0)
   end
 
-  def training_progress(network = nil)
+  # Stosunek wartosci sklasyfikowanych poprwanie do wszystkich wartosci w
+  # zbiorze danych treningowych
+  def training_quality(network = nil)
     network ||= self.network
     training_data.select{|row| row[:output] == network.digit(row[:input]) }.count / training_data_size.to_f
   end
 
+  # Jesli aktualna jakosc jest najlepsza, siec neuronowa z aktualnymi
+  # parametrami neuronow jest zapisywana jako "najlepsza" (nie zawsze
+  # siec wytrenowana w ostatniej epoce bedzie miala najwieksza jakosc)
   def set_best_network
-    self.current_training_progress = training_progress
+    self.current_training_quality = training_quality
 
-    if current_training_progress > max_training_progress
-      self.max_training_progress = current_training_progress
+    if current_training_quality > max_training_quality
+      self.max_training_quality = current_training_quality
       self.best_network = network.copy
     end
   end
 
+  # Dla kazdej epoki wybieramy losowe n wartosci (ilosc zdefiniowana przez
+  # batch_size), ktore beda sluzyly do trenowania sieci w danej epoce
   def train
     max_epochs.times.each do |epoch|
       random_batch.each_with_index do |row, index|
@@ -151,11 +173,14 @@ class NetworkTrainer
         print "Row: #{index}/#{batch_size}\r" unless multi
       end
 
+      # Po zakonczeniu epoki, zapisywane sa wagi i bias oraz wywolywana jest
+      # metoda, ktora ustawia aktualna siec jako ta najlepsza, jesli jej jakosc
+      # jest najwieksza z dotychczasowych epok
       network.save_weights_and_bias
       set_best_network
 
       print "Epoch: #{epoch}/#{max_epochs}\r" if multi
-      puts "Epoch: #{epoch}: #{(current_training_progress * 100.0).round(2)}%" unless multi
+      puts "Epoch: #{epoch}: #{(current_training_quality * 100.0).round(2)}%" unless multi
     end
   end
 end
@@ -172,25 +197,30 @@ class Neuron
     @error = 0.0
   end
 
+  # Wyjscie neuronu
   def calculate_output(inputs)
     @inputs = inputs
     @output = Tools.sigmoid(net + bias)
   end
 
+  # Iloczyn wag i wartosci na wejsciach
   def net
     Tools.multiply_arrays(weights, inputs)
   end
 
+  # Uaktualnia wage, ale jeszcze jej nie zapisuje
   def update_weight(i, delta_w)
     @new_weights ||= weights
     @new_weights[i] = weights[i] + delta_w
   end
 
+  # Uaktualnia bias, ale jeszcze go nie zapisuje
   def update_bias(delta_b)
     @new_bias ||= bias
     @new_bias = bias + delta_b
   end
 
+  # Zapisuje uaktualnione wagi i bias jako aktualne
   def save_weights_and_bias
     @weights = @new_weights
     @bias = @new_bias
@@ -200,13 +230,9 @@ class Neuron
 
   private
 
+  # Inicjalizacja wag za pomoca zmienny generowanych w rozkladzie normalnym
   def initialize_weights
     inputs_number.times.map { Tools.random }
-  end
-end
-
-class NeronsLoader
-  def initialize(neurons_count: , inputs_number:)
   end
 end
 
