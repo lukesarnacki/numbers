@@ -3,7 +3,7 @@ require 'byebug'
 require 'csv'
 
 class Network
-  attr_reader :layers
+  attr_accessor :layers
 
   def initialize(neurons_in_layers)
     @layers = []
@@ -16,7 +16,7 @@ class Network
   end
 
   def digit(input)
-    Tools.max(calculate_output(input))
+    Tools.max_index(calculate_output(input))
   end
 
   def output_layer_size
@@ -54,7 +54,7 @@ class Network
 
     if layers.count + layer == 0
       # To byla pierwsza warstwa ukryta, dlatego mozemy zapisac wagi i bias
-      save_weights_and_bias
+      #save_weights_and_bias
       return
     end
     train(expected_output, learning_rate, layer - 1)
@@ -75,10 +75,31 @@ class Network
 
     calculate_output(output, layer: layer + 1)
   end
+
+  def copy
+    new_network = self.dup
+    new_network.layers = layers.map do |layer|
+      layer.map { |neuron| neuron.dup }
+    end
+
+    new_network
+  end
 end
 
 class NetworkTrainer
-  attr_reader :network, :learning_rate, :max_epochs, :batch_size, :multi
+  attr_reader :network,
+    # Wspolczynnik uczenia
+    :learning_rate,
+    # Maksymalna liczba epok
+    :max_epochs,
+    # Ilosc wierszy treningowych wykorzystywanych w kazdej epoce
+    :batch_size,
+    # W trybie multi nie są wypisywane poszczegolne epoki, tylko najlepszy wynik
+    # (przydatne przy porownywaniu jakosci modelu dla roznych parametrow sieci i
+    # uczenia
+    :multi
+
+    attr_accessor :max_training_progress, :current_training_progress, :best_network
 
   def initialize(network, learning_rate: 3.0, max_epochs: 30, batch_size: 20, multi: false)
     @network = network
@@ -86,28 +107,56 @@ class NetworkTrainer
     @max_epochs = max_epochs
     @batch_size = batch_size
     @multi = multi
+    @max_training_progress = 0
+  end
+
+  def random_batch
+    training_data.shuffle[0..batch_size]
+  end
+
+  def training_data
+    @training_data ||= DataLoader.new(test: false).load
+  end
+
+  def training_data_size
+    training_data.length
+  end
+
+  # Zwraca tablice w postaci [0, 0, 0, 0, 1, 0, 0, 0, 0, 0] - jest to oczekiwane
+  # wyjście sieci dla cyfry przekazanej jako parametr.
+  def expected_output(digit)
+    Array.new(network.output_layer_size, 0.0).insert(digit, 1.0)
+  end
+
+  def training_progress(network = nil)
+    network ||= self.network
+    training_data.select{|row| row[:output] == network.digit(row[:input]) }.count / training_data_size.to_f
+  end
+
+  def set_best_network
+    self.current_training_progress = training_progress
+
+    if current_training_progress > max_training_progress
+      self.max_training_progress = current_training_progress
+      self.best_network = network.copy
+    end
   end
 
   def train
-    data = DataLoader.new(test: false).load
-    good = []
     max_epochs.times.each do |epoch|
-      data.shuffle[0..batch_size].each_with_index do |row, index|
-        input = row[:input]
-        expected_output = Array.new(network.output_layer_size, 0.0).insert(row[:output], 1.0)
-        network.calculate_output(input)
-        network.train(expected_output, learning_rate)
+      random_batch.each_with_index do |row, index|
+        network.calculate_output(row[:input])
+        network.train(expected_output(row[:output]), learning_rate)
+
         print "Row: #{index}/#{batch_size}\r" unless multi
       end
 
-      all = data.count
-      good << data.select{|row| row[:output] == network.digit(row[:input]) }.count
+      network.save_weights_and_bias
+      set_best_network
 
       print "Epoch: #{epoch}/#{max_epochs}\r" if multi
-      puts "Epoch: #{epoch}: #{good.last}/#{all}" unless multi
+      puts "Epoch: #{epoch}: #{(current_training_progress * 100.0).round(2)}%" unless multi
     end
-
-    "epoch #{good.each_with_index.max[1]}, good #{good.max}"
   end
 end
 
@@ -138,12 +187,15 @@ class Neuron
   end
 
   def update_bias(delta_b)
+    @new_bias ||= bias
     @new_bias = bias + delta_b
   end
 
   def save_weights_and_bias
     @weights = @new_weights
     @bias = @new_bias
+    @new_weights = nil
+    @new_bias = nil
   end
 
   private
@@ -180,7 +232,7 @@ class Tools
     a.length.times.map { |i| a[i] * b[i] }.inject(0){|sum,x| sum + x }
   end
 
-  def self.max(array)
+  def self.max_index(array)
     array.each_with_index.max[1]
   end
 end
@@ -206,31 +258,16 @@ class DataLoader
   end
 end
 
+network = Network.new([64, 100, 10])
+trainer = NetworkTrainer.new(network, learning_rate: 2.5, max_epochs: 30, batch_size: 100)
+trainer.train
+trained_network = trainer.best_network
+
 data = DataLoader.new(test: true).load
-
-network = Network.new([64, 31,21,10])
-good = NetworkTrainer.new(network, learning_rate: 3.0, max_epochs: 30, batch_size: 200).train
-
-data = DataLoader.new.load
 all = data.count
 good = 0
 data.each do |row|
-  good += 1 if network.digit(row[:input]) == row[:output]
+  good += 1 if trained_network.digit(row[:input]) == row[:output]
 end
 
 puts "Result: #{good}/#{all}"
-
-
-# neurons = 7..16
-# learning_rates = [1.5, 1.7, 1.9, 2.1, 2.3, 2.5, 2.7, 2.9, 3.0]
-# batch_sizes = [20, 30, 40, 50, 80]
-#
-# neurons.each do |n_count|
-#   learning_rates.each do |learning_rate|
-#     batch_sizes.each do |batch_size|
-#       network = Network.new([64,n_count,10])
-#       good = NetworkTrainer.new(network, learning_rate: learning_rate, max_epochs: 50, batch_size: batch_size, multi: true).train
-#       p  [:neurons_count, n_count, :batch_size, batch_size, :learning_rate, learning_rate, :good, good]
-#     end
-#   end
-# end
