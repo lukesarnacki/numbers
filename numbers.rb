@@ -259,11 +259,12 @@ class DataLoader
 end
 
 network = Network.new([64, 100, 10])
-trainer = NetworkTrainer.new(network, learning_rate: 2.5, max_epochs: 30, batch_size: 100)
+trainer = NetworkTrainer.new(network, learning_rate: 1.8, max_epochs: 50, batch_size: 200)
 trainer.train
 trained_network = trainer.best_network
 
 data = DataLoader.new(test: true).load
+
 all = data.count
 good = 0
 data.each do |row|
@@ -271,3 +272,22 @@ data.each do |row|
 end
 
 puts "Result: #{good}/#{all}"
+
+# neurons = [10, 40, 50, 100]
+# learning_rates = [1.5, 2.5]
+# batch_sizes = [20, 50, 100, 200]
+#
+# data = DataLoader.new(test: true).load
+#
+# neurons.each do |n_count|
+#   learning_rates.each do |learning_rate|
+#     batch_sizes.each do |batch_size|
+#       network = Network.new([64,n_count,10])
+#       trainer = NetworkTrainer.new(network, learning_rate: learning_rate, max_epochs: 50, batch_size: batch_size, multi: true)
+#       trainer.train
+#       network = trainer.best_network
+#       good = data.select { |row| network.digit(row[:input]) == row[:output] }.count
+#       p  [:neurons_count, n_count, :batch_size, batch_size, :learning_rate, learning_rate, :good, good]
+#     end
+#   end
+# end
