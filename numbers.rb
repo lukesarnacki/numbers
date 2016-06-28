@@ -85,7 +85,7 @@ class Network
     end
 
     # Dla warstwy wyjsciowej zwracamy obliczone wartosci wyjsciowe
-    return output if layer > layers.count
+    return output if layer >= layers.count - 1
 
     # Wywoalenie rekurencyjne metody dla kolejnej warstwy
     calculate_output(output, layer: layer + 1)
@@ -285,7 +285,7 @@ class DataLoader
 end
 
 network = Network.new([64, 100, 10])
-trainer = NetworkTrainer.new(network, learning_rate: 1.8, max_epochs: 50, batch_size: 200)
+trainer = NetworkTrainer.new(network, learning_rate: 1.8, max_epochs: 100, batch_size: 20)
 trainer.train
 trained_network = trainer.best_network
 
