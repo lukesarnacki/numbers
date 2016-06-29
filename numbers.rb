@@ -2,6 +2,8 @@ require 'rubystats/normal_distribution'
 require 'byebug'
 require 'csv'
 
+DESIRED_QUALITY = 0.8
+
 class Network
   attr_accessor :layers
 
@@ -30,32 +32,36 @@ class Network
 
   # Rekurencyjnie trenuje siec dla wszystkich warst zaczynajac od ostatniej
   # (indeks -1) a konczac na pierwszej warstwie ukrytej.
-  def train(expected_output, learning_rate, layer = -1)
+  def train(inputs, expected_output, learning_rate, layer = -1)
+    if layer == -1
+      calculate_output(inputs) # przed obliczeniami ustawia wejscia wszystkich neuronow sieci dla danych wejsciowych
+    end
+
     layers[layer].each_with_index.map do |neuron, neuron_number|
-      inputs = neuron.inputs
+      neuron.error = if layer == -1
+                        # Dla warstwy wyjsciowej blad jest liczony na podstawie
+                        # oczekiwanej odpowiedzi
+                        Tools.sigmoid_prime(neuron.net) * (expected_output[neuron_number] - neuron.output)
+                      else
+                        # Dla warstw ukrytych blad jest liczony na podstawie bledow
+                        # nastepnej warstwy
+                        next_layer = layer + 1
+                        # Tablica wag które wychodzą z aktualnie rozpatrywanego
+                        # neuronu do neuronow z kolejnej warstwy
+                        weights = layers[next_layer].map{|n| n.weights[neuron_number]}
+                        # Bledy neuronow nastepnej warstwy
+                        errors = layers[next_layer].map(&:error)
+                        Tools.sigmoid_prime(neuron.net) * Tools.multiply_arrays(weights, errors)
+                      end
 
-      inputs.each_with_index do |input, i|
-        error = if layer == -1
-                  # Dla warstwy wyjsciowej blad jest liczony na podstawie
-                  # oczekiwanej odpowiedzi
-                  Tools.sigmoid_prime(neuron.net) * (expected_output[neuron_number] - neuron.output)
-                else
-                  # Dla warstw ukrytych blad jest liczony na podstawie bledow
-                  # nastepnej warstwy
-                  next_layer = layer + 1
-                  # Tablica wag które wychodzą z aktualnie rozpatrywanego
-                  # neuronu do neuronow z kolejnej warstwy
-                  weights = layers[next_layer].map{|n| n.weights[neuron_number]}
-                  # Bledy neuronow nastepnej warstwy
-                  errors = layers[next_layer].map(&:error)
-                  Tools.sigmoid_prime(neuron.net) * Tools.multiply_arrays(weights, errors)
-                end
+      # q * d
+      delta = learning_rate * neuron.error
 
-        neuron.error = error
-        delta_w = learning_rate * error * input
-        delta_b = learning_rate * error
-        neuron.update_weight(i, delta_w)
-        neuron.update_bias(delta_b)
+      neuron.update_bias(delta)
+
+      neuron.inputs.each_with_index do |input, i|
+        # q * d * z
+        neuron.update_weight(i, delta * input)
       end
     end
 
@@ -63,26 +69,18 @@ class Network
       # To byla ostatnia warstwa, mozna zakonczyc wykonanie metody
       return
     end
-    train(expected_output, learning_rate, layer - 1)
+    train(inputs, expected_output, learning_rate, layer - 1)
   end
 
   def save_weights_and_bias
     layers.each {|layer| layer.map { |neuron| neuron.save_weights_and_bias } }
   end
 
-  # Wyjscie sieci dla danych wejsciowych. Zwraca tablice o dlugosci rownej
-  # ilosci neuronow z ostatniej warstwie.
+  # Oblicza wyjscie sieci dla danych wejsciowych, propagujac wejscie na
+  # wszystkie warstwy. Zwraca tablice o dlugosci rownej ilosci neuronow w
+  # ostatniej warstwie.
   def calculate_output(inputs, layer: 0)
-    output = if(layer == -1)
-      # -1 oznacza w tym momencie warstwe wejsciowa, warstwa wejsciowa jest umowna
-      # i dla niej wartosci wyjsciowe to po prostu to co zostalo przekazane w
-      # metodzie jako wyjscie
-      inputs
-    else
-      # Dla kolejnych warstw wyjscie jest obliczane przez kazdy z neuronow
-      # warstwy
-      layers[layer].map {|neuron| neuron.calculate_output(inputs) }
-    end
+    output = layers[layer].map {|neuron| neuron.calculate_output(inputs) }
 
     # Dla warstwy wyjsciowej zwracamy obliczone wartosci wyjsciowe
     return output if layer >= layers.count - 1
@@ -116,7 +114,7 @@ class NetworkTrainer
 
     attr_accessor :max_training_quality, :current_training_quality, :best_network
 
-  def initialize(network, learning_rate: 3.0, max_epochs: 30, batch_size: 20, multi: false)
+  def initialize(network, learning_rate: 3.0, max_epochs: 30, batch_size: 10, multi: false)
     @network = network
     @learning_rate = learning_rate
     @max_epochs = max_epochs
@@ -125,12 +123,23 @@ class NetworkTrainer
     @max_training_quality = 0
   end
 
-  def random_batch
-    training_data.shuffle[0..batch_size]
+  # Wybiera sposrod danych zestaw danych dla danej epoki. Jesli minie tyle epok,
+  # ze dane sie skoncza, to uklada dane w tablicy losowo i zaczyna jeszcze raz
+  def batch(epoch)
+    shuffle_training_data if epoch * batch_size > training_data_size
+    from = (epoch * batch_size) % training_data_size
+    to = [from + batch_size, training_data_size - 1].min
+    training_data[from..to]
   end
 
+  # Uklada dane treningowe w losowej kolejnosci
+  def shuffle_training_data
+    @training_data.shuffle!
+  end
+
+  # Dane treningowe ustawione w tablicy losowo
   def training_data
-    @training_data ||= DataLoader.new(test: false).load
+    @training_data ||= DataLoader.new(test: false).load.shuffle
   end
 
   def training_data_size
@@ -166,9 +175,8 @@ class NetworkTrainer
   # batch_size), ktore beda sluzyly do trenowania sieci w danej epoce
   def train
     max_epochs.times.each do |epoch|
-      random_batch.each_with_index do |row, index|
-        network.calculate_output(row[:input])
-        network.train(expected_output(row[:output]), learning_rate)
+      batch(epoch).each_with_index do |row, index|
+        network.train(row[:input], expected_output(row[:output]), learning_rate)
 
         print "Row: #{index}/#{batch_size}\r" unless multi
       end
@@ -181,6 +189,9 @@ class NetworkTrainer
 
       print "Epoch: #{epoch}/#{max_epochs}\r" if multi
       puts "Epoch: #{epoch}: #{(current_training_quality * 100.0).round(2)}%" unless multi
+
+      # Jesli model osiagnie oczekiwana jakosc, mozna zakonczyc trening
+      return if current_training_quality >= DESIRED_QUALITY
     end
   end
 end
@@ -194,38 +205,39 @@ class Neuron
     @inputs_number = inputs_number
     @weights = initialize_weights
     @bias = Tools.random
-    @error = 0.0
+    @error = nil
   end
 
   # Wyjscie neuronu
   def calculate_output(inputs)
     @inputs = inputs
-    @output = Tools.sigmoid(net + bias)
+    @output = Tools.sigmoid(net)
   end
 
-  # Iloczyn wag i wartosci na wejsciach
+  # Iloczyn wag i wartosci na wejsciach + bias
   def net
-    Tools.multiply_arrays(weights, inputs)
+    Tools.multiply_arrays(weights, inputs) + bias
   end
 
   # Uaktualnia wage, ale jeszcze jej nie zapisuje
-  def update_weight(i, delta_w)
-    @new_weights ||= weights
-    @new_weights[i] = weights[i] + delta_w
+  def update_weight(i, delta)
+    @w_deltas ||= []
+    @w_deltas[i] ||= []
+    @w_deltas[i] << delta
   end
 
   # Uaktualnia bias, ale jeszcze go nie zapisuje
-  def update_bias(delta_b)
-    @new_bias ||= bias
-    @new_bias = bias + delta_b
+  def update_bias(delta)
+    @b_deltas ||= []
+    @b_deltas << delta
   end
 
   # Zapisuje uaktualnione wagi i bias jako aktualne
   def save_weights_and_bias
-    @weights = @new_weights
-    @bias = @new_bias
-    @new_weights = nil
-    @new_bias = nil
+    @weights = @weights.each_with_index.map {|w, i| w + (@w_deltas[i].inject{ |sum, el| sum + el }.to_f / @w_deltas[i].size) }
+    @bias = @b_deltas.inject{ |sum, el| sum + el }.to_f / @b_deltas.size
+    @w_deltas = []
+    @b_deltas = []
   end
 
   private
@@ -284,8 +296,8 @@ class DataLoader
   end
 end
 
-network = Network.new([64, 100, 10])
-trainer = NetworkTrainer.new(network, learning_rate: 1.8, max_epochs: 100, batch_size: 20)
+network = Network.new([64,20,10])
+trainer = NetworkTrainer.new(network, learning_rate: 4.0, max_epochs: 500, batch_size: 50)
 trainer.train
 trained_network = trainer.best_network
 
@@ -300,8 +312,8 @@ end
 puts "Result: #{good}/#{all}"
 
 # neurons = [10, 40, 50, 100]
-# learning_rates = [1.5, 2.5]
-# batch_sizes = [20, 50, 100, 200]
+# learning_rates = [2.0, 3.0, 4.0]
+# batch_sizes = [10, 20, 50, 100]
 #
 # data = DataLoader.new(test: true).load
 #
