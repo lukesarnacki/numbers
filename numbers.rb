@@ -1,6 +1,7 @@
 require 'rubystats/normal_distribution'
 require 'byebug'
 require 'csv'
+require 'celluloid/current'
 
 DESIRED_QUALITY = 0.8
 
@@ -112,7 +113,7 @@ class NetworkTrainer
     # uczenia
     :multi
 
-    attr_accessor :max_training_quality, :current_training_quality, :best_network
+    attr_accessor :max_properly_classified, :current_properly_classified, :best_network
 
   def initialize(network, learning_rate: 3.0, max_epochs: 30, batch_size: 10, multi: false)
     @network = network
@@ -120,7 +121,7 @@ class NetworkTrainer
     @max_epochs = max_epochs
     @batch_size = batch_size
     @multi = multi
-    @max_training_quality = 0
+    @max_properly_classified = 0
   end
 
   # Wybiera sposrod danych zestaw danych dla danej epoki. Jesli minie tyle epok,
@@ -157,26 +158,29 @@ class NetworkTrainer
     Array.new(network.output_layer_size, 0.0).insert(digit, 1.0)
   end
 
-  # Stosunek wartosci sklasyfikowanych poprwanie do wszystkich wartosci w
-  # zbiorze danych treningowych
-  def training_quality(network = nil)
+  def properly_classified(network = nil)
     network ||= self.network
-    training_data.select{|row| row[:output] == network.digit(row[:input]) }.count / validation_data.size.to_f
+    validation_data.select{|row| row[:output] == network.digit(row[:input]) }.count
   end
 
-  def network_error(network = nil)
-    network ||= self.network
-    (1.0/(2.0*validation_data.size)) * validation_data.map { |row| (network.calculate_output(row[:input])[row[:output]] - 1)**2 }.reduce(:+)
+  # Stosunek wartosci sklasyfikowanych poprwanie do wszystkich wartosci w
+  # zbiorze danych treningowych
+  def training_quality
+    properly_classified / validation_data.count.to_f
+  end
+
+  def network_error
+    1 - self.training_quality
   end
 
   # Jesli aktualna jakosc jest najlepsza, siec neuronowa z aktualnymi
   # parametrami neuronow jest zapisywana jako "najlepsza" (nie zawsze
   # siec wytrenowana w ostatniej epoce bedzie miala najwieksza jakosc)
   def set_best_network
-    self.current_training_quality = training_quality
+    self.current_properly_classified = properly_classified
 
-    if current_training_quality > max_training_quality
-      self.max_training_quality = current_training_quality
+    if current_properly_classified > max_properly_classified
+      self.max_properly_classified = current_properly_classified
       self.best_network = network.copy
     end
   end
@@ -184,6 +188,7 @@ class NetworkTrainer
   # Dla kazdej epoki wybieramy losowe n wartosci (ilosc zdefiniowana przez
   # batch_size), ktore beda sluzyly do trenowania sieci w danej epoce
   def train
+    puts "Training started: neurons_count: #{network.layers[0].count}, learning_rate: #{learning_rate}, batch_size: #{batch_size}"
     max_epochs.times.each do |epoch|
       batch(epoch).each_with_index do |row, index|
         network.train(row[:input], expected_output(row[:output]), learning_rate)
@@ -197,12 +202,21 @@ class NetworkTrainer
       network.save_weights_and_bias(learning_rate, batch_size)
       set_best_network
 
-      print "Epoch: #{epoch}/#{max_epochs}\r" if multi
+      results << { error: network_error, properly_classified: current_properly_classified }
+
+      #print "Epoch: #{epoch}/#{max_epochs}\r" if multi
       puts "Epoch: #{epoch}: #{(current_training_quality * 100.0).round(2)}, #{network_error.round(4)}" unless multi
 
       # Jesli model osiagnie oczekiwana jakosc, mozna zakonczyc trening
       # return if current_training_quality >= DESIRED_QUALITY
     end
+    puts "Training ended: neurons_count: #{network.layers[0].count}, learning_rate: #{learning_rate}, batch_size: #{batch_size}"
+
+    return results
+  end
+
+  def results
+    @results ||= []
   end
 end
 
@@ -310,36 +324,81 @@ class DataLoader
   end
 end
 
-network = Network.new([64,40,10])
-trainer = NetworkTrainer.new(network, learning_rate: 3.0, max_epochs: 500, batch_size: 2)
-trainer.train
-trained_network = trainer.best_network
+class Tester
+  include Celluloid
 
-data = DataLoader.new(test: true).load
+  attr_reader :neurons_count, :learning_rate, :batch_size
 
-all = data.count
-good = 0
-data.each do |row|
-  good += 1 if trained_network.digit(row[:input]) == row[:output]
+  def initialize(neurons_count, learning_rate, batch_size)
+    @neurons_count = neurons_count
+    @learning_rate = learning_rate
+    @batch_size = batch_size
+  end
+
+  def network
+    @network ||= Network.new([64,neurons_count,10])
+  end
+
+  def trainer
+    @trainer ||= NetworkTrainer.new(network, learning_rate: learning_rate, max_epochs: 50, batch_size: batch_size, multi: true)
+  end
+
+  def test_data
+    @test_data ||= DataLoader.new(test: true).load
+  end
+
+  def properly_classified(network)
+    @properly_classified ||= test_data.select { |row| network.digit(row[:input]) == row[:output] }.count
+  end
+
+  def error(network)
+    1 - (properly_classified(network)/test_data.count.to_f)
+  end
+
+  def csv_headers(network)
+    ["ilosc danych testowych", test_data.count, "blad sieci", error(network), "przypadki sklasyfikowane dobrze", properly_classified(network)]
+  end
+
+  def test
+    results = trainer.train
+    network = trainer.best_network
+
+    CSV.open("csv/#{neurons_count.to_i}_#{learning_rate.to_i}_#{batch_size.to_i}.csv", "wb") do |csv|
+      csv << csv_headers(network)
+      results.each {|result| csv << [result[:error], result[:properly_classified]] }
+     end
+
+     p  [:neurons_count, neurons_count, :batch_size, batch_size, :learning_rate, learning_rate, error(network)]
+  end
 end
 
-puts "Result: #{good}/#{all}"
 
-# neurons = [10, 40, 50, 100]
-# learning_rates = [2.0, 3.0, 4.0]
-# batch_sizes = [10, 20, 50, 100]
+neurons_counts = [10, 40, 100]
+learning_rates = [3.0, 5.0 , 7.0]
+batch_sizes = [10, 50, 100]
+
+testers = neurons_counts.map do |neurons_count|
+  learning_rates.map do |learning_rate|
+    batch_sizes.map do |batch_size|
+      Tester.new(neurons_count, learning_rate, batch_size)
+    end
+  end
+end.flatten
+
+testers.each {|t| t.test }
+
+
+# network = Network.new([64,40,10])
+# trainer = NetworkTrainer.new(network, learning_rate: 5.0, max_epochs: 500, batch_size: 10)
+# trainer.train
+# trained_network = trainer.best_network
 #
 # data = DataLoader.new(test: true).load
 #
-# neurons.each do |n_count|
-#   learning_rates.each do |learning_rate|
-#     batch_sizes.each do |batch_size|
-#       network = Network.new([64,n_count,10])
-#       trainer = NetworkTrainer.new(network, learning_rate: learning_rate, max_epochs: 50, batch_size: batch_size, multi: true)
-#       trainer.train
-#       network = trainer.best_network
-#       good = data.select { |row| network.digit(row[:input]) == row[:output] }.count
-#       p  [:neurons_count, n_count, :batch_size, batch_size, :learning_rate, learning_rate, :good, good]
-#     end
-#   end
+# all = data.count
+# good = 0
+# data.each do |row|
+#   good += 1 if trained_network.digit(row[:input]) == row[:output]
 # end
+#
+# puts "Result: #{good}/#{all}"
