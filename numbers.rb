@@ -72,8 +72,8 @@ class Network
     train(inputs, expected_output, learning_rate, layer - 1)
   end
 
-  def save_weights_and_bias
-    layers.each {|layer| layer.map { |neuron| neuron.save_weights_and_bias } }
+  def save_weights_and_bias(learning_rate, batch_size)
+    layers.each {|layer| layer.map { |neuron| neuron.save_weights_and_bias(learning_rate, batch_size) } }
   end
 
   # Oblicza wyjscie sieci dla danych wejsciowych, propagujac wejscie na
@@ -126,24 +126,29 @@ class NetworkTrainer
   # Wybiera sposrod danych zestaw danych dla danej epoki. Jesli minie tyle epok,
   # ze dane sie skoncza, to uklada dane w tablicy losowo i zaczyna jeszcze raz
   def batch(epoch)
-    shuffle_training_data if epoch * batch_size > training_data_size
-    from = (epoch * batch_size) % training_data_size
-    to = [from + batch_size, training_data_size - 1].min
+    shuffle_training_data if epoch * batch_size > training_data.size
+    from = (epoch * batch_size) % training_data.size
+    to = [from + batch_size, training_data.size - 1].min
     training_data[from..to]
   end
 
   # Uklada dane treningowe w losowej kolejnosci
   def shuffle_training_data
-    @training_data.shuffle!
+    training_data.shuffle!
+  end
+
+  def data
+    @data ||= DataLoader.new(test: false).load.shuffle
   end
 
   # Dane treningowe ustawione w tablicy losowo
   def training_data
-    @training_data ||= DataLoader.new(test: false).load.shuffle
+    @training_data ||= data[1000..-1]
   end
 
-  def training_data_size
-    training_data.length
+  # Dane do walidacji ustawione w tablicy losowo
+  def validation_data
+    @validation_data ||= data[0..999]
   end
 
   # Zwraca tablice w postaci [0, 0, 0, 0, 1, 0, 0, 0, 0, 0] - jest to oczekiwane
@@ -156,7 +161,12 @@ class NetworkTrainer
   # zbiorze danych treningowych
   def training_quality(network = nil)
     network ||= self.network
-    training_data.select{|row| row[:output] == network.digit(row[:input]) }.count / training_data_size.to_f
+    training_data.select{|row| row[:output] == network.digit(row[:input]) }.count / validation_data.size.to_f
+  end
+
+  def network_error(network = nil)
+    network ||= self.network
+    (1.0/(2.0*validation_data.size)) * validation_data.map { |row| (network.calculate_output(row[:input])[row[:output]] - 1)**2 }.reduce(:+)
   end
 
   # Jesli aktualna jakosc jest najlepsza, siec neuronowa z aktualnymi
@@ -184,14 +194,14 @@ class NetworkTrainer
       # Po zakonczeniu epoki, zapisywane sa wagi i bias oraz wywolywana jest
       # metoda, ktora ustawia aktualna siec jako ta najlepsza, jesli jej jakosc
       # jest najwieksza z dotychczasowych epok
-      network.save_weights_and_bias
+      network.save_weights_and_bias(learning_rate, batch_size)
       set_best_network
 
       print "Epoch: #{epoch}/#{max_epochs}\r" if multi
-      puts "Epoch: #{epoch}: #{(current_training_quality * 100.0).round(2)}%" unless multi
+      puts "Epoch: #{epoch}: #{(current_training_quality * 100.0).round(2)}, #{network_error.round(4)}" unless multi
 
       # Jesli model osiagnie oczekiwana jakosc, mozna zakonczyc trening
-      return if current_training_quality >= DESIRED_QUALITY
+      # return if current_training_quality >= DESIRED_QUALITY
     end
   end
 end
@@ -233,9 +243,13 @@ class Neuron
   end
 
   # Zapisuje uaktualnione wagi i bias jako aktualne
-  def save_weights_and_bias
-    @weights = @weights.each_with_index.map {|w, i| w + (@w_deltas[i].inject{ |sum, el| sum + el }.to_f / @w_deltas[i].size) }
-    @bias = @b_deltas.inject{ |sum, el| sum + el }.to_f / @b_deltas.size
+  def save_weights_and_bias(learning_rate, batch_size)
+    @weights = @weights.each_with_index.map do |w, i|
+      #w + (@w_deltas[i].reduce(&:+).to_f / @w_deltas[i].size)
+      w - ((learning_rate.to_f/batch_size.to_f) * @w_deltas[i].reduce(:+))
+    end
+    #@bias = @bias + @b_deltas.reduce(&:+).to_f / @b_deltas.size
+    @bias = @bias - ((learning_rate.to_f/batch_size.to_f) * @b_deltas.reduce(:+))
     @w_deltas = []
     @b_deltas = []
   end
@@ -296,8 +310,8 @@ class DataLoader
   end
 end
 
-network = Network.new([64,20,10])
-trainer = NetworkTrainer.new(network, learning_rate: 4.0, max_epochs: 500, batch_size: 50)
+network = Network.new([64,40,10])
+trainer = NetworkTrainer.new(network, learning_rate: 3.0, max_epochs: 500, batch_size: 2)
 trainer.train
 trained_network = trainer.best_network
 
