@@ -2,8 +2,10 @@ require 'rubystats/normal_distribution'
 require 'byebug'
 require 'csv'
 require 'celluloid/current'
+require 'bigdecimal'
 
-DESIRED_QUALITY = 0.8
+DESIRED_QUALITY = 0.9
+MAX_EPOCHS = 500
 
 class Network
   attr_accessor :layers
@@ -128,8 +130,9 @@ class NetworkTrainer
   # ze dane sie skoncza, to uklada dane w tablicy losowo i zaczyna jeszcze raz
   def batch(epoch)
     shuffle_training_data if epoch * batch_size > training_data.size
+
     from = (epoch * batch_size) % training_data.size
-    to = [from + batch_size, training_data.size - 1].min
+    to = [from + batch_size - 1, training_data.size - 1].min
     training_data[from..to]
   end
 
@@ -160,17 +163,17 @@ class NetworkTrainer
 
   def properly_classified(network = nil)
     network ||= self.network
-    validation_data.select{|row| row[:output] == network.digit(row[:input]) }.count
+    BigDecimal.new(validation_data.select{|row| row[:output] == network.digit(row[:input]) }.count)
   end
 
   # Stosunek wartosci sklasyfikowanych poprwanie do wszystkich wartosci w
   # zbiorze danych treningowych
   def training_quality
-    properly_classified / validation_data.count.to_f
+    BigDecimal.new(current_properly_classified) / BigDecimal.new(validation_data.count)
   end
 
   def network_error
-    1 - self.training_quality
+    BigDecimal.new(1) - self.training_quality
   end
 
   # Jesli aktualna jakosc jest najlepsza, siec neuronowa z aktualnymi
@@ -193,7 +196,7 @@ class NetworkTrainer
       batch(epoch).each_with_index do |row, index|
         network.train(row[:input], expected_output(row[:output]), learning_rate)
 
-        print "Row: #{index}/#{batch_size}\r" unless multi
+        print "Row: #{index+1}/#{batch_size}\r" unless multi
       end
 
       # Po zakonczeniu epoki, zapisywane sa wagi i bias oraz wywolywana jest
@@ -202,13 +205,13 @@ class NetworkTrainer
       network.save_weights_and_bias(learning_rate, batch_size)
       set_best_network
 
-      results << { error: network_error, properly_classified: current_properly_classified }
+      results << { error: network_error.to_f, properly_classified: current_properly_classified.to_i }
 
       #print "Epoch: #{epoch}/#{max_epochs}\r" if multi
-      puts "Epoch: #{epoch}: #{(current_training_quality * 100.0).round(2)}, #{network_error.round(4)}" unless multi
+      puts "Epoch: #{epoch}: #{(training_quality * BigDecimal.new(100)).to_f.round(3)}, #{network_error.to_f.round(4)}" unless multi
 
       # Jesli model osiagnie oczekiwana jakosc, mozna zakonczyc trening
-      # return if current_training_quality >= DESIRED_QUALITY
+      # return results if training_quality >= DESIRED_QUALITY
     end
     puts "Training ended: neurons_count: #{network.layers[0].count}, learning_rate: #{learning_rate}, batch_size: #{batch_size}"
 
@@ -235,12 +238,12 @@ class Neuron
   # Wyjscie neuronu
   def calculate_output(inputs)
     @inputs = inputs
-    @output = Tools.sigmoid(net)
+    @output = Tools.sigmoid(net + bias)
   end
 
   # Iloczyn wag i wartosci na wejsciach + bias
   def net
-    Tools.multiply_arrays(weights, inputs) + bias
+    Tools.multiply_arrays(weights, inputs)
   end
 
   # Uaktualnia wage, ale jeszcze jej nie zapisuje
@@ -262,7 +265,7 @@ class Neuron
       w + (@w_deltas[i].reduce(&:+).to_f / @w_deltas[i].size)
       #w - ((learning_rate.to_f/batch_size.to_f) * @w_deltas[i].reduce(:+))
     end
-    @bias = @bias + @b_deltas.reduce(&:+).to_f / @b_deltas.size
+    @bias = @bias + (@b_deltas.reduce(&:+).to_f / @b_deltas.size)
     #@bias = @bias - ((learning_rate.to_f/batch_size.to_f) * @b_deltas.reduce(:+))
     @w_deltas = []
     @b_deltas = []
@@ -304,7 +307,6 @@ class Tools
 end
 
 class DataLoader
-
   attr_reader :test
 
   def initialize(test: false)
@@ -325,14 +327,13 @@ class DataLoader
 end
 
 class Tester
-  include Celluloid
+  attr_reader :neurons_count, :learning_rate, :batch_size, :multi
 
-  attr_reader :neurons_count, :learning_rate, :batch_size
-
-  def initialize(neurons_count, learning_rate, batch_size)
+  def initialize(neurons_count, learning_rate, batch_size, multi: false)
     @neurons_count = neurons_count
     @learning_rate = learning_rate
     @batch_size = batch_size
+    @multi = multi
   end
 
   def network
@@ -340,7 +341,7 @@ class Tester
   end
 
   def trainer
-    @trainer ||= NetworkTrainer.new(network, learning_rate: learning_rate, max_epochs: 50, batch_size: batch_size, multi: true)
+    @trainer ||= NetworkTrainer.new(network, learning_rate: learning_rate, max_epochs: MAX_EPOCHS, batch_size: batch_size, multi: multi)
   end
 
   def test_data
@@ -348,18 +349,18 @@ class Tester
   end
 
   def properly_classified(network)
-    @properly_classified ||= test_data.select { |row| network.digit(row[:input]) == row[:output] }.count
+    @properly_classified ||= BigDecimal.new(test_data.select { |row| network.digit(row[:input]) == row[:output] }.count)
   end
 
   def error(network)
-    1 - (properly_classified(network)/test_data.count.to_f)
+    1 - (properly_classified(network)/BigDecimal.new(test_data.count))
   end
 
   def csv_headers(network)
-    ["ilosc danych testowych", test_data.count, "blad sieci", error(network), "przypadki sklasyfikowane dobrze", properly_classified(network)]
+    ["ilosc danych testowych", test_data.count, "blad sieci", error(network).to_f, "przypadki sklasyfikowane dobrze", properly_classified(network).to_i]
   end
 
-  def test
+  def test_network
     results = trainer.train
     network = trainer.best_network
 
@@ -368,25 +369,41 @@ class Tester
       results.each {|result| csv << [result[:error], result[:properly_classified]] }
      end
 
-     p  [:neurons_count, neurons_count, :batch_size, batch_size, :learning_rate, learning_rate, error(network)]
+    p  [:neurons_count, neurons_count, :batch_size, batch_size, :learning_rate, learning_rate, error(network).to_f]
   end
 end
 
+class TesterWorker
+  include Celluloid
 
-neurons_counts = [10, 40, 100]
+  def test_network(neurons_count, learning_rate, batch_size)
+    Tester.new(neurons_count, learning_rate, batch_size, multi: true).test_network
+  end
+end
+
+#Tester.new(50, 5.0, 50).test_network
+
+neurons_counts = [10, 50, 100]
 learning_rates = [3.0, 5.0 , 7.0]
-batch_sizes = [10, 50, 100]
+batch_sizes = [50, 100, 200]
 
-testers = neurons_counts.map do |neurons_count|
+pool = TesterWorker.pool(size: 50)
+
+workers = []
+
+# Przypadki raczej slabo uczace
+workers.push pool.future.test_network(10, 3.0, 10)
+workers.push pool.future.test_network(50, 3.0, 10)
+
+neurons_counts.map do |neurons_count|
   learning_rates.map do |learning_rate|
     batch_sizes.map do |batch_size|
-      Tester.new(neurons_count, learning_rate, batch_size)
+      workers.push pool.future.test_network(neurons_count, learning_rate, batch_size)
     end
   end
-end.flatten
+end
 
-testers.each {|t| t.test }
-
+workers.each { |worker| worker.value }
 
 # network = Network.new([64,40,10])
 # trainer = NetworkTrainer.new(network, learning_rate: 5.0, max_epochs: 500, batch_size: 10)
