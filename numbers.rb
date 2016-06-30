@@ -245,11 +245,11 @@ class Neuron
   # Zapisuje uaktualnione wagi i bias jako aktualne
   def save_weights_and_bias(learning_rate, batch_size)
     @weights = @weights.each_with_index.map do |w, i|
-      #w + (@w_deltas[i].reduce(&:+).to_f / @w_deltas[i].size)
-      w - ((learning_rate.to_f/batch_size.to_f) * @w_deltas[i].reduce(:+))
+      w + (@w_deltas[i].reduce(&:+).to_f / @w_deltas[i].size)
+      #w - ((learning_rate.to_f/batch_size.to_f) * @w_deltas[i].reduce(:+))
     end
-    #@bias = @bias + @b_deltas.reduce(&:+).to_f / @b_deltas.size
-    @bias = @bias - ((learning_rate.to_f/batch_size.to_f) * @b_deltas.reduce(:+))
+    @bias = @bias + @b_deltas.reduce(&:+).to_f / @b_deltas.size
+    #@bias = @bias - ((learning_rate.to_f/batch_size.to_f) * @b_deltas.reduce(:+))
     @w_deltas = []
     @b_deltas = []
   end
