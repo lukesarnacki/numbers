@@ -102,6 +102,62 @@ class Network
   end
 end
 
+class Neuron
+  attr_reader :inputs_number, :weights, :bias, :output, :inputs
+  attr_accessor :error
+
+  def initialize(inputs_number: )
+    @inputs_number = inputs_number
+    @weights = initialize_weights
+    @bias = Tools.random
+    @error = nil
+  end
+
+  # Wyjscie neuronu
+  def calculate_output(inputs)
+    @inputs = inputs
+    @output = Tools.sigmoid(net + bias)
+  end
+
+  # Iloczyn wag i wartosci na wejsciach + bias
+  def net
+    Tools.multiply_arrays(weights, inputs)
+  end
+
+  # Uaktualnia wage, ale jeszcze jej nie zapisuje
+  def update_weight(i, delta)
+    @w_deltas ||= []
+    @w_deltas[i] ||= []
+    @w_deltas[i] << delta
+  end
+
+  # Uaktualnia bias, ale jeszcze go nie zapisuje
+  def update_bias(delta)
+    @b_deltas ||= []
+    @b_deltas << delta
+  end
+
+  # Zapisuje uaktualnione wagi i bias jako aktualne
+  def save_weights_and_bias(learning_rate, batch_size)
+    @weights = @weights.each_with_index.map do |w, i|
+      w + (@w_deltas[i].reduce(&:+).to_f / @w_deltas[i].size)
+      #w - ((learning_rate.to_f/batch_size.to_f) * @w_deltas[i].reduce(:+))
+    end
+    @bias = @bias + (@b_deltas.reduce(&:+).to_f / @b_deltas.size)
+    #@bias = @bias - ((learning_rate.to_f/batch_size.to_f) * @b_deltas.reduce(:+))
+    @w_deltas = []
+    @b_deltas = []
+  end
+
+  private
+
+  # Inicjalizacja wag za pomoca zmienny generowanych w rozkladzie normalnym
+  def initialize_weights
+    inputs_number.times.map { Tools.random }
+  end
+end
+
+
 class NetworkTrainer
   attr_reader :network,
     # Wspolczynnik uczenia
@@ -220,62 +276,6 @@ class NetworkTrainer
 
   def results
     @results ||= []
-  end
-end
-
-
-class Neuron
-  attr_reader :inputs_number, :weights, :bias, :output, :inputs
-  attr_accessor :error
-
-  def initialize(inputs_number: )
-    @inputs_number = inputs_number
-    @weights = initialize_weights
-    @bias = Tools.random
-    @error = nil
-  end
-
-  # Wyjscie neuronu
-  def calculate_output(inputs)
-    @inputs = inputs
-    @output = Tools.sigmoid(net + bias)
-  end
-
-  # Iloczyn wag i wartosci na wejsciach + bias
-  def net
-    Tools.multiply_arrays(weights, inputs)
-  end
-
-  # Uaktualnia wage, ale jeszcze jej nie zapisuje
-  def update_weight(i, delta)
-    @w_deltas ||= []
-    @w_deltas[i] ||= []
-    @w_deltas[i] << delta
-  end
-
-  # Uaktualnia bias, ale jeszcze go nie zapisuje
-  def update_bias(delta)
-    @b_deltas ||= []
-    @b_deltas << delta
-  end
-
-  # Zapisuje uaktualnione wagi i bias jako aktualne
-  def save_weights_and_bias(learning_rate, batch_size)
-    @weights = @weights.each_with_index.map do |w, i|
-      w + (@w_deltas[i].reduce(&:+).to_f / @w_deltas[i].size)
-      #w - ((learning_rate.to_f/batch_size.to_f) * @w_deltas[i].reduce(:+))
-    end
-    @bias = @bias + (@b_deltas.reduce(&:+).to_f / @b_deltas.size)
-    #@bias = @bias - ((learning_rate.to_f/batch_size.to_f) * @b_deltas.reduce(:+))
-    @w_deltas = []
-    @b_deltas = []
-  end
-
-  private
-
-  # Inicjalizacja wag za pomoca zmienny generowanych w rozkladzie normalnym
-  def initialize_weights
-    inputs_number.times.map { Tools.random }
   end
 end
 
